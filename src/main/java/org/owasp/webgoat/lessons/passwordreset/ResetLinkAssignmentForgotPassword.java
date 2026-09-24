@@ -23,6 +23,8 @@
 package org.owasp.webgoat.lessons.passwordreset;
 
 import jakarta.servlet.http.HttpServletRequest;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.util.UUID;
 import org.owasp.webgoat.container.assignments.AssignmentEndpoint;
 import org.owasp.webgoat.container.assignments.AttackResult;
@@ -67,15 +69,52 @@ public class ResetLinkAssignmentForgotPassword extends AssignmentEndpoint {
       @RequestParam String email, HttpServletRequest request) {
     String resetLink = UUID.randomUUID().toString();
     ResetLinkAssignment.resetLinks.add(resetLink);
-    String host = request.getHeader("host");
-    if (ResetLinkAssignment.TOM_EMAIL.equals(email)
-        && (host.contains(webWolfPort)
-            || host.contains(webWolfHost))) { // User indeed changed the host header.
+    
+    // Extract host from request for validation purposes only
+    String requestHost;
+    try {
+      URI uri = new URI(request.getRequestURL().toString());
+      requestHost = uri.getHost();
+      int port = uri.getPort();
+      // Include port in host string if present and not default
+      if (port != -1 && port != 80 && port != 443) {
+        requestHost = requestHost + ":" + port;
+      }
+    } catch (URISyntaxException e) {
+      return failed(this).output("Invalid request URL").build();
+    }
+    
+    // Validate against expected WebWolf host configurations using exact match
+    // This prevents bypasses like "evil.com:9090" or "evil.com/localhost"
+    boolean isWebWolfRequest = false;
+    
+    // Build list of acceptable hosts
+    String expectedWebWolfHost1 = webWolfHost + ":" + webWolfPort;
+    String expectedWebWolfHost2 = webWolfHost;
+    
+    // Check exact match
+    if (requestHost.equals(expectedWebWolfHost1) || requestHost.equals(expectedWebWolfHost2)) {
+      isWebWolfRequest = true;
+    }
+    
+    // Also accept localhost as equivalent to 127.0.0.1 for local development/testing
+    if (!isWebWolfRequest && "127.0.0.1".equals(webWolfHost)) {
+      String localhostWithPort = "localhost:" + webWolfPort;
+      if (requestHost.equals(localhostWithPort) || requestHost.equals("localhost")) {
+        isWebWolfRequest = true;
+      }
+    }
+    
+    if (ResetLinkAssignment.TOM_EMAIL.equals(email) && isWebWolfRequest) {
       ResetLinkAssignment.userToTomResetLink.put(getWebSession().getUserName(), resetLink);
-      fakeClickingLinkEmail(host, resetLink);
+      // Use configured WebWolf host for callback, not request host
+      // This prevents SSRF to arbitrary hosts
+      String webWolfHostWithPort = webWolfHost + ":" + webWolfPort;
+      fakeClickingLinkEmail(webWolfHostWithPort, resetLink);
     } else {
       try {
-        sendMailToUser(email, host, resetLink);
+        // For regular emails, use the validated request host
+        sendMailToUser(email, requestHost, resetLink);
       } catch (Exception e) {
         return failed(this).output("E-mail can't be send. please try again.").build();
       }
